@@ -1,0 +1,250 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Deploys the SSM "block public sharing" remediation across an AWS Organization
+  as a service-managed StackSet. The SSM service setting is per-account and
+  per-region, so every account/region pair needs its own stack instance.
+  Deploy this stack in the Organizations management account or a delegated
+  CloudFormation admin account.
+
+Parameters:
+  TargetOuIds:
+    Type: CommaDelimitedList
+    Description: >
+      Organization root or OU IDs to deploy into, e.g. r-abc1 or
+      ou-abc1-11111111. Comma separated.
+  TargetRegions:
+    Type: CommaDelimitedList
+    Default: us-east-1
+    Description: >
+      Regions to deploy into. The public-sharing setting is regional, so list
+      every region your organization uses.
+  RunToken:
+    Type: String
+    Default: '1'
+    Description: >
+      Change this and update the stack to re-run the remediation in every
+      account and region.
+  FailureTolerancePercentage:
+    Type: Number
+    Default: 10
+    MinValue: 0
+    MaxValue: 100
+    Description: Percentage of accounts that may fail before the operation stops.
+  MaxConcurrentPercentage:
+    Type: Number
+    Default: 25
+    MinValue: 1
+    MaxValue: 100
+    Description: Percentage of accounts to deploy to concurrently.
+  CallAs:
+    Type: String
+    Default: SELF
+    AllowedValues: [SELF, DELEGATED_ADMIN]
+    Description: >
+      SELF when deploying from the management account, DELEGATED_ADMIN when
+      deploying from a registered delegated administrator account.
+
+Resources:
+
+  SsmBlockPublicStackSet:
+    Type: AWS::CloudFormation::StackSet
+    Properties:
+      StackSetName: !Sub '${AWS::StackName}-ssm-block-public'
+      Description: >
+        Enforces the SSM document public-sharing block and unshares any
+        publicly shared Self-owned SSM documents.
+      PermissionModel: SERVICE_MANAGED
+      CallAs: !Ref CallAs
+      Capabilities: [CAPABILITY_IAM]
+      AutoDeployment:
+        Enabled: true
+        RetainStacksOnAccountRemoval: false
+      ManagedExecution:
+        Active: true
+      OperationPreferences:
+        FailureTolerancePercentage: !Ref FailureTolerancePercentage
+        MaxConcurrentPercentage: !Ref MaxConcurrentPercentage
+        RegionConcurrencyType: PARALLEL
+      Parameters:
+        - ParameterKey: RunToken
+          ParameterValue: !Ref RunToken
+      StackInstancesGroup:
+        - DeploymentTargets:
+            OrganizationalUnitIds: !Ref TargetOuIds
+          Regions: !Ref TargetRegions
+      TemplateBody: |
+          AWSTemplateFormatVersion: '2010-09-09'
+          Description: >
+            Sets the SSM "block public sharing" service setting to Disable and strips the
+            "all" principal from any Self-owned SSM document. Runs once at stack deploy
+            via a CloudFormation custom resource. Bump RunToken to run it again.
+
+          Parameters:
+            RunToken:
+              Type: String
+              Default: '1'
+              Description: >
+                Change this value and update the stack to re-run the remediation.
+
+          Resources:
+
+            RemediationRole:
+              Type: AWS::IAM::Role
+              Properties:
+                AssumeRolePolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    - Effect: Allow
+                      Principal: { Service: lambda.amazonaws.com }
+                      Action: sts:AssumeRole
+                Policies:
+                  - PolicyName: ssm-block-public-documents
+                    PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                        - Effect: Allow
+                          Action:
+                            - ssm:ListDocuments
+                            - ssm:DescribeDocumentPermission
+                            - ssm:GetServiceSetting
+                          Resource: '*'
+                        - Effect: Allow
+                          Action: ssm:ModifyDocumentPermission
+                          Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/*'
+                        - Effect: Allow
+                          Action: ssm:UpdateServiceSetting
+                          Resource: !Sub
+                            - 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:servicesetting${S}'
+                            - S: /ssm/documents/console/public-sharing-permission
+                        - Effect: Allow
+                          Action:
+                            - logs:CreateLogGroup
+                            - logs:CreateLogStream
+                            - logs:PutLogEvents
+                          Resource: !Sub 'arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*'
+
+            RemediationFunction:
+              Type: AWS::Lambda::Function
+              Properties:
+                FunctionName: ssm-block-public-sharing
+                Runtime: python3.12
+                Handler: index.lambda_handler
+                Role: !GetAtt RemediationRole.Arn
+                Timeout: 300
+                MemorySize: 256
+                Code:
+                  ZipFile: |
+                    import json, boto3, urllib.request
+                    from botocore.exceptions import ClientError
+
+                    SETTING = "/ssm/documents/console/public-sharing-permission"
+                    ssm = boto3.client("ssm")
+
+                    def cfn_send(event, context, status, data):
+                        body = json.dumps({
+                            "Status": status,
+                            "Reason": "See log stream " + context.log_stream_name,
+                            "PhysicalResourceId": "ssm-block-public",
+                            "StackId": event["StackId"],
+                            "RequestId": event["RequestId"],
+                            "LogicalResourceId": event["LogicalResourceId"],
+                            "NoEcho": False,
+                            "Data": data,
+                        }).encode("utf-8")
+                        req = urllib.request.Request(event["ResponseURL"], data=body, method="PUT")
+                        req.add_header("content-type", "")
+                        req.add_header("content-length", str(len(body)))
+                        with urllib.request.urlopen(req) as r:
+                            print("cfn response:", r.status, status)
+
+                    def enforce_setting():
+                        try:
+                            cur = ssm.get_service_setting(SettingId=SETTING)["ServiceSetting"].get("SettingValue")
+                        except ClientError as e:
+                            cur = None
+                            print("get_service_setting failed:", e)
+                        if cur == "Disable":
+                            return "already_disabled"
+                        ssm.update_service_setting(SettingId=SETTING, SettingValue="Disable")
+                        return "disabled (was %s)" % cur
+
+                    def is_public(name):
+                        try:
+                            r = ssm.describe_document_permission(Name=name, PermissionType="Share")
+                        except ClientError as e:
+                            if e.response["Error"]["Code"] in ("InvalidDocumentOperation", "InvalidDocument"):
+                                return False
+                            raise
+                        return "all" in (r.get("AccountIds") or [])
+
+                    def unshare(name):
+                        if not is_public(name):
+                            return False
+                        ssm.modify_document_permission(Name=name, PermissionType="Share",
+                                                       AccountIdsToRemove=["all"])
+                        print("removed public share from", name)
+                        return True
+
+                    def self_documents():
+                        pages = ssm.get_paginator("list_documents").paginate(
+                            Filters=[{"Key": "Owner", "Values": ["Self"]}])
+                        for p in pages:
+                            for d in p["DocumentIdentifiers"]:
+                                yield d["Name"]
+
+                    def remediate():
+                        out = {"setting": enforce_setting(), "unshared": [], "scanned": 0}
+                        for n in self_documents():
+                            out["scanned"] += 1
+                            try:
+                                if unshare(n):
+                                    out["unshared"].append(n)
+                            except ClientError as e:
+                                print("failed on", n, e)
+                        print("result:", json.dumps(out))
+                        return out
+
+                    def lambda_handler(event, context):
+                        print("event:", json.dumps(event, default=str))
+                        if not (isinstance(event, dict) and "ResponseURL" in event):
+                            return remediate()
+                        status, data = "SUCCESS", {}
+                        try:
+                            if event.get("RequestType") != "Delete":
+                                r = remediate()
+                                data = {"Setting": str(r["setting"]),
+                                        "Scanned": str(r["scanned"]),
+                                        "UnsharedCount": str(len(r["unshared"])),
+                                        "Unshared": ",".join(r["unshared"])[:900]}
+                        except Exception as e:
+                            print("remediation failed:", e)
+                            status, data = "FAILED", {"Error": str(e)[:900]}
+                        try:
+                            cfn_send(event, context, status, data)
+                        except Exception as e:
+                            print("could not signal CloudFormation:", e)
+
+            RunOnDeploy:
+              Type: AWS::CloudFormation::CustomResource
+              Properties:
+                ServiceToken: !GetAtt RemediationFunction.Arn
+                RunToken: !Ref RunToken
+
+          Outputs:
+            FunctionArn:
+              Description: Invoke manually to re-run without a stack update.
+              Value: !GetAtt RemediationFunction.Arn
+            Setting:
+              Description: Result of the service-setting enforcement.
+              Value: !GetAtt RunOnDeploy.Setting
+            DocumentsScanned:
+              Value: !GetAtt RunOnDeploy.Scanned
+            DocumentsUnshared:
+              Value: !GetAtt RunOnDeploy.UnsharedCount
+
+Outputs:
+  StackSetId:
+    Description: StackSet identifier.
+    Value: !Ref SsmBlockPublicStackSet
+  StackSetName:
+    Value: !Sub '${AWS::StackName}-ssm-block-public'
