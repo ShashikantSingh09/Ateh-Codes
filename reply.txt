@@ -65,3 +65,17 @@ Replaced with “Executive risk owner (COO, interim)”. I’ve put Doug in for 
 Q: Curious about the goal of this? i.e. is it due to an external commitment? Or to keep ourselves accountable?
 
 Mainly to keep ourselves accountable: are we meeting the SLA, which teams are overloaded, and where severity or SLAs need recalibrating. There’s no external commitment today, but the same reports would cover a customer questionnaire or audit. The weekly view will be an automated Jira dashboard, so there’s no manual reporting effort.
+
+
+Agreed on using the incident process, but only for real emergencies. A CVE on its own is not an incident, and it shouldn’t be treated as urgent or handed to the incident/on-call team just because a scanner rates it Critical.
+
+A CVE goes to the incident process only when all three of these are confirmed:
+```
+It is being exploited. There’s confirmed active exploitation in the wild (for example, it’s listed in CISA’s Known Exploited Vulnerabilities catalogue), and a working exploit is publicly available.
+It can be reached by people who shouldn’t have access. The affected system is reachable by unauthorised users; for example, it’s internet-facing or accessible without authentication.
+Security has verified it. The vulnerable component is actually present and in use on that system, not just flagged by the scanner.
+
+If any one of these isn’t met, it follows the normal SLA process: a Jira ticket in the owning team’s backlog (Critical 7 days, High 30 days), with no paging and no incident.
+
+If all three are met, Security raises it through the incident process so on-call can act, and we check for signs of compromise alongside the fix.
+```
