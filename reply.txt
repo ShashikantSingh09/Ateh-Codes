@@ -1,0 +1,58 @@
+Forrest: prompt review of adjustment requests?
+
+Yes. Security now responds to severity change requests within 1 business day for Critical and 5 for everything else. If we’re late, the due date moves out by the delay, so you aren’t penalised for our response time (Section 3).
+
+Forrest: scanner may over-mark Critical/High; is there a feedback mechanism?
+
+Good point. The scanner’s severity is now only the starting point. Tickets carry a severity adjusted for our environment, using a new rubric (Section 3). If you see over-scoring across many findings, raise it with us any time or at the monthly calibration review, and we’ll tune the scanner rules so it’s fixed at the source. If a team has more Critical and High tickets than it can fix alongside other work, the EM and Security agree a priority order explicitly, rather than letting tickets silently miss SLA.
+
+Forrest: why restrict to just one level?
+
+Fair. The limit was there to stop a Critical quietly becoming a Low, but the rubric does that job better. It’s removed: a finding can move as many levels as the rubric supports, with the reason recorded. If the component isn’t there at all, the ticket closes as “Not affected”.
+
+Forrest: can the owner reassign to another team?
+
+Yes. The assigned team can pass it to the team it thinks owns the fix, with a short reason. The SLA clock keeps running, and if the two teams disagree, Security decides within a business day and updates the ownership mapping (Section 5, step 8).
+
+Forrest: not all teams use sprints; maybe “10 business days”
+
+Agreed. Medium and Low now say 10 business days, and I removed the other sprint references.
+
+Stephen: use the incident process to reach on-call (changed)
+
+Done. Critical tickets are also raised through the incident process so they reach the owning team’s on-call engineer, who acknowledges within 1 business day. For now Security raises them at triage. Next, we’ll set up a Wiz custom control for exploitable, internet-exposed production Criticals, with an automation rule that pages on-call through our paging tool. Wiz creates one alert per affected resource, so we’ll keep that rule narrow to avoid noise. The alert names the CVE so on-call can find the grouped ticket, and later the Wiz API job will add the Jira link to the alert automatically (Sections 3 and 6).
+
+Stephen: replace “3” with “5” for weekly triage
+
+Accepted. High is now acknowledged within 5 business days, and the escalation table matches.
+
+Stephen: lean on automation and AI (Dependabot step)
+
+Accepted as triage step 5. I also added a “Fix PR” ticket field, so a ready PR is linked when the ticket is created and the team only reviews, tests and merges.
+
+Stephen: new ticket type and workflow in Jira? (changed)
+
+Proposing two phases. One thing to know: Wiz only auto-creates Jira tickets from Wiz Issues, not from individual CVE findings, so CVEs won’t flow into Jira on their own. Phase 1, now: Security creates the tickets at triage, grouped into roughly one per component, fix version and team. They use the existing Bug type in each team’s project with a vulnerability label, mapped onto your current columns. Phase 2: a small scheduled job using the Wiz API groups findings and creates, updates and closes tickets automatically, with a dedicated Vulnerability ticket type. We’re also asking Wiz whether CVE findings can trigger their automation directly on our plan, which could remove the need for the job (Sections 6 and 7).
+
+Stephen: need a definition of severities
+
+Added: there’s now a severity rubric in Section 3 with criteria and an example for each level. Change requests should point to the rubric row and evidence.
+
+Stephen: most services build on a public image like Alpine
+
+Thanks, updated. Base-image CVEs are now fixed by the service team bumping the image tag and rebuilding, and Dependabot’s Docker updates can automate that. Platform only owns this where a shared image exists. I added moving to a few maintained base images as an open decision.
+
+Stephen and Josh: CISO role doesn’t exist / Doug, COO, or Jeetu?
+
+Replaced with “Executive risk owner (COO, interim)”. I’ve put Doug in for now, with the head of software as the alternative listed in open decisions. Easy to change if we’d prefer Jeetu.
+
+Josh: goal of reporting?
+
+Mainly to keep ourselves accountable: are we meeting the SLA, which teams are overloaded, and where severity or SLAs need recalibrating. There’s no external commitment today, but the same reports would cover a customer questionnaire or audit. The weekly view will be an automated Jira dashboard, so there’s no manual reporting effort.
+
+
+
+
+Question for the team
+
+Which paging tool you use (PagerDuty, Opsgenie or something else).
